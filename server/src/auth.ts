@@ -28,7 +28,8 @@ export function initAuth(): void {
       subscription_status: 'active',  // Always active in self-host
       period_start: null,
       period_end: null,
-      minutes_used: 0,  // Unlimited in self-host mode
+      minutes_used: 0,       // Unlimited in self-host mode
+      credit_minutes: 0,     // Not used in self-host mode
       created_at: new Date().toISOString(),
       enabled: true,
     };

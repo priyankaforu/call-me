@@ -13,6 +13,7 @@ import {
   updateUserSubscription,
   cancelUserSubscription,
   resetUserMinutes,
+  addCreditMinutes,
 } from './database.js';
 
 let stripe: Stripe | null = null;
@@ -23,7 +24,15 @@ export interface SubscriptionConfig {
   priceId: string;           // Stripe Price ID for the subscription
   monthlyMinutes: number;    // Minutes included per month
   monthlyPriceCents: number; // Price in cents (for display)
+  creditPricePerMinute: number; // Price per credit minute in cents (default: 50 = $0.50)
 }
+
+// Credit packages available for purchase
+export const CREDIT_PACKAGES = [
+  { minutes: 30, label: '30 minutes' },
+  { minutes: 60, label: '60 minutes' },
+  { minutes: 120, label: '120 minutes' },
+] as const;
 
 let config: SubscriptionConfig | null = null;
 
@@ -52,6 +61,10 @@ export function getMonthlyMinutes(): number {
 
 export function getMonthlyPriceCents(): number {
   return config?.monthlyPriceCents || 2000;
+}
+
+export function getCreditPricePerMinute(): number {
+  return config?.creditPricePerMinute || 50; // Default $0.50/min
 }
 
 /**
@@ -102,6 +115,51 @@ export async function createSubscriptionCheckout(
 }
 
 /**
+ * Create a Checkout Session for purchasing credit minutes
+ */
+export async function createCreditCheckout(
+  userId: string,
+  minutes: number,
+  successUrl: string,
+  cancelUrl: string
+): Promise<string> {
+  const s = getStripe();
+  const user = getUserById(userId);
+
+  if (!user) throw new Error('User not found');
+
+  let customerId = user.stripe_customer_id;
+  if (!customerId) {
+    customerId = await createStripeCustomer(userId, user.email);
+  }
+
+  const pricePerMin = getCreditPricePerMinute();
+  const totalCents = pricePerMin * minutes;
+
+  const session = await s.checkout.sessions.create({
+    customer: customerId,
+    payment_method_types: ['card'],
+    line_items: [{
+      price_data: {
+        currency: 'usd',
+        product_data: {
+          name: `${minutes} Credit Minutes`,
+          description: 'Additional call minutes for Hey Boss',
+        },
+        unit_amount: totalCents,
+      },
+      quantity: 1,
+    }],
+    mode: 'payment',
+    success_url: successUrl,
+    cancel_url: cancelUrl,
+    metadata: { userId, creditMinutes: minutes.toString() },
+  });
+
+  return session.url!;
+}
+
+/**
  * Create a billing portal session for managing subscription
  */
 export async function createBillingPortal(userId: string, returnUrl: string): Promise<string> {
@@ -133,6 +191,20 @@ export async function handleWebhook(payload: string, signature: string): Promise
   const event = s.webhooks.constructEvent(payload, signature, config.webhookSecret);
 
   switch (event.type) {
+    case 'checkout.session.completed': {
+      const session = event.data.object as Stripe.Checkout.Session;
+      // Handle credit purchase (one-time payment)
+      if (session.mode === 'payment' && session.metadata?.creditMinutes) {
+        const userId = session.metadata.userId;
+        const creditMinutes = parseInt(session.metadata.creditMinutes, 10);
+        if (userId && creditMinutes > 0) {
+          const newBalance = addCreditMinutes(userId, creditMinutes);
+          console.error(`Added ${creditMinutes} credit minutes to user ${userId} (new balance: ${newBalance})`);
+        }
+      }
+      break;
+    }
+
     case 'customer.subscription.created':
     case 'customer.subscription.updated': {
       const subscription = event.data.object as Stripe.Subscription;

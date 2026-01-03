@@ -72,6 +72,7 @@ In Stripe Dashboard:
 In Stripe Dashboard → Webhooks:
 - URL: `https://api.heyboss.io/webhook`
 - Events:
+  - `checkout.session.completed` (for credit purchases)
   - `customer.subscription.created`
   - `customer.subscription.updated`
   - `customer.subscription.deleted`
@@ -111,12 +112,18 @@ bun run start # Production
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## Subscription Management
+## Subscription & Credits
 
+**Subscription:**
+- $20/month includes 60 minutes
 - Minutes reset automatically when `invoice.paid` webhook fires
 - Cancelled subscriptions remain active until period end
-- Dashboard shows minutes used/remaining
-- Users can manage subscription via Stripe portal
+
+**Additional Credits:**
+- $0.50 per minute (configurable via `CREDIT_PRICE_PER_MINUTE`)
+- Used after subscription minutes are exhausted
+- Credits never expire
+- Purchase via dashboard in packages of 30, 60, or 120 minutes
 
 ## Endpoints
 
@@ -144,6 +151,7 @@ bun run start # Production
 | `STRIPE_PRICE_ID` | SaaS | Subscription price ID |
 | `MONTHLY_PRICE_CENTS` | SaaS | Price in cents (2000 = $20) |
 | `MONTHLY_MINUTES` | SaaS | Minutes per month |
+| `CREDIT_PRICE_PER_MINUTE` | SaaS | Credit price in cents (50 = $0.50) |
 
 ## Deployment
 

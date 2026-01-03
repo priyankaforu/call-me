@@ -6,8 +6,8 @@ import { IncomingMessage, ServerResponse } from 'http';
 import { parse as parseUrl } from 'url';
 import { parse as parseQuery } from 'querystring';
 import { createUser, getUserByEmail, getUserByApiKey, getUserUsage, User, updateUserPhone } from './database.js';
-import { isStripeEnabled, createSubscriptionCheckout, createBillingPortal, handleWebhook, getMonthlyMinutes, getMonthlyPriceCents } from './stripe.js';
-import { getMonthlyMinutes as getBillingMinutes, getMonthlyPriceCents as getBillingPrice } from './billing.js';
+import { isStripeEnabled, createSubscriptionCheckout, createBillingPortal, handleWebhook, getMonthlyMinutes, getMonthlyPriceCents, createCreditCheckout, getCreditPricePerMinute, CREDIT_PACKAGES } from './stripe.js';
+import { getMonthlyMinutes as getBillingMinutes, getMonthlyPriceCents as getBillingPrice, getCreditPricePerMinute as getBillingCreditPrice } from './billing.js';
 
 const STYLES = `
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -73,11 +73,11 @@ function html(title: string, content: string, user?: User): string {
 </html>`;
 }
 
-function getMinutesConfig(): { price: number; minutes: number } {
+function getMinutesConfig(): { price: number; minutes: number; creditPrice: number } {
   if (isStripeEnabled()) {
-    return { price: getMonthlyPriceCents(), minutes: getMonthlyMinutes() };
+    return { price: getMonthlyPriceCents(), minutes: getMonthlyMinutes(), creditPrice: getCreditPricePerMinute() };
   }
-  return { price: getBillingPrice(), minutes: getBillingMinutes() };
+  return { price: getBillingPrice(), minutes: getBillingMinutes(), creditPrice: getBillingCreditPrice() };
 }
 
 function homePage(): string {
@@ -147,11 +147,12 @@ function loginPage(error?: string): string {
 }
 
 function dashboardPage(user: User, message?: string): string {
-  const { minutes: monthlyMinutes } = getMinutesConfig();
-  const minutesRemaining = Math.max(0, monthlyMinutes - user.minutes_used);
+  const { minutes: monthlyMinutes, creditPrice } = getMinutesConfig();
+  const subscriptionRemaining = Math.max(0, monthlyMinutes - user.minutes_used);
+  const totalRemaining = subscriptionRemaining + user.credit_minutes;
   const usagePercent = Math.min(100, (user.minutes_used / monthlyMinutes) * 100);
 
-  const minutesClass = minutesRemaining > 20 ? 'good' : minutesRemaining > 5 ? 'low' : 'empty';
+  const minutesClass = totalRemaining > 20 ? 'good' : totalRemaining > 5 ? 'low' : 'empty';
   const statusClass = user.subscription_status;
 
   const usage = getUserUsage(user.id);
@@ -174,12 +175,12 @@ function dashboardPage(user: User, message?: string): string {
       </div>
 
       ${user.subscription_status === 'active' ? `
-        <div class="minutes ${minutesClass}">${minutesRemaining}</div>
-        <p class="price">minutes remaining this month</p>
+        <div class="minutes ${minutesClass}">${totalRemaining}</div>
+        <p class="price">total minutes available</p>
         <div class="progress">
           <div class="progress-bar" style="width: ${usagePercent}%"></div>
         </div>
-        <p class="price" style="margin-top: 8px;">${user.minutes_used} of ${monthlyMinutes} minutes used</p>
+        <p class="price" style="margin-top: 8px;">${subscriptionRemaining} subscription + ${user.credit_minutes} credits</p>
       ` : ''}
 
       ${isStripeEnabled() ? `
@@ -196,6 +197,24 @@ function dashboardPage(user: User, message?: string): string {
         </div>
       ` : ''}
     </div>
+
+    ${user.subscription_status === 'active' && isStripeEnabled() ? `
+    <div class="card">
+      <label>Buy Additional Credits</label>
+      <p class="price" style="margin-bottom: 16px;">$${(creditPrice / 100).toFixed(2)}/minute - used after subscription minutes run out</p>
+      <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+        ${CREDIT_PACKAGES.map(pkg => `
+          <form method="POST" action="/buy-credits" style="flex: 1; min-width: 100px;">
+            <input type="hidden" name="minutes" value="${pkg.minutes}">
+            <button type="submit" class="secondary" style="width: 100%;">
+              ${pkg.label}<br>
+              <small>$${((creditPrice * pkg.minutes) / 100).toFixed(2)}</small>
+            </button>
+          </form>
+        `).join('')}
+      </div>
+    </div>
+    ` : ''}
 
     <div class="card">
       <label>Your API Key</label>
@@ -374,7 +393,8 @@ export async function handleWebRequest(req: IncomingMessage, res: ServerResponse
 
   if (path === '/dashboard' && req.method === 'GET') {
     const message = url.query.welcome === '1' ? 'Welcome! Subscribe to start making calls.' :
-                    url.query.subscribed === '1' ? 'Subscription activated!' : undefined;
+                    url.query.subscribed === '1' ? 'Subscription activated!' :
+                    url.query.credits === '1' ? 'Credits added to your account!' : undefined;
     res.writeHead(200, { 'Content-Type': 'text/html' });
     res.end(dashboardPage(currentUser, message));
     return true;
@@ -425,6 +445,33 @@ export async function handleWebRequest(req: IncomingMessage, res: ServerResponse
       redirect(res, portalUrl);
     } catch (err) {
       console.error('Portal error:', err);
+      redirect(res, '/dashboard');
+    }
+    return true;
+  }
+
+  if (path === '/buy-credits' && req.method === 'POST' && isStripeEnabled()) {
+    try {
+      const body = await parseBody(req);
+      const minutes = parseInt(body.minutes || '0', 10);
+
+      // Validate minutes against allowed packages
+      const validPackage = CREDIT_PACKAGES.find(pkg => pkg.minutes === minutes);
+      if (!validPackage) {
+        redirect(res, '/dashboard');
+        return true;
+      }
+
+      const baseUrl = `${req.headers['x-forwarded-proto'] || 'http'}://${req.headers.host}`;
+      const checkoutUrl = await createCreditCheckout(
+        currentUser.id,
+        minutes,
+        `${baseUrl}/dashboard?credits=1`,
+        `${baseUrl}/dashboard`
+      );
+      redirect(res, checkoutUrl);
+    } catch (err) {
+      console.error('Credit checkout error:', err);
       redirect(res, '/dashboard');
     }
     return true;

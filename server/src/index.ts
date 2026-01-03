@@ -12,9 +12,9 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { IncomingMessage, ServerResponse } from 'http';
 import { CallManager, loadServerConfig } from './phone-call.js';
-import { initDatabase, recordUsage } from './database.js';
+import { initDatabase, recordUsage, deductCreditMinutes } from './database.js';
 import { initAuth, validateApiKey, isSelfHostMode } from './auth.js';
-import { loadBillingConfig, getMonthlyMinutes, getMinutesRemaining, hasMinutesRemaining } from './billing.js';
+import { loadBillingConfig, getMonthlyMinutes, getMinutesRemaining, hasMinutesRemaining, canMakeCalls, getTotalAvailableMinutes, getCreditPricePerMinute } from './billing.js';
 import { initStripe, isStripeEnabled } from './stripe.js';
 import { handleWebRequest } from './web.js';
 
@@ -35,6 +35,7 @@ if (process.env.STRIPE_SECRET_KEY && process.env.STRIPE_WEBHOOK_SECRET && proces
     priceId: process.env.STRIPE_PRICE_ID,
     monthlyMinutes: getMonthlyMinutes(),
     monthlyPriceCents: parseInt(process.env.MONTHLY_PRICE_CENTS || '2000', 10),
+    creditPricePerMinute: getCreditPricePerMinute(),
   });
 }
 
@@ -53,6 +54,7 @@ let currentUser: {
   phoneNumber: string;
   subscriptionStatus: 'active' | 'cancelled' | 'none';
   minutesUsed: number;
+  creditMinutes: number;
 } | null = null;
 
 // List available tools
@@ -112,8 +114,9 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
     };
   }
 
-  // Check subscription (skip in self-host mode)
+  // Check subscription and credits (skip in self-host mode)
   if (!isSelfHostMode()) {
+    // Must have an active subscription to use the service
     if (currentUser.subscriptionStatus !== 'active') {
       return {
         content: [{
@@ -124,11 +127,12 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     }
 
-    if (!hasMinutesRemaining(currentUser.minutesUsed)) {
+    // Check if user has subscription minutes OR credits available
+    if (!canMakeCalls(currentUser.minutesUsed, currentUser.creditMinutes)) {
       return {
         content: [{
           type: 'text',
-          text: 'Error: Monthly minutes exhausted. Minutes reset at the start of your next billing period.',
+          text: 'Error: No minutes available. Purchase additional credits at heyboss.io or wait for your next billing period.',
         }],
         isError: true,
       };
@@ -163,17 +167,35 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       // Record usage (skip in self-host mode)
       if (!isSelfHostMode()) {
+        const callMinutes = Math.ceil(durationSeconds / 60);
+
+        // Calculate how much comes from subscription vs credits
+        const subscriptionRemaining = getMinutesRemaining(currentUser.minutesUsed);
+        const subscriptionUsed = Math.min(callMinutes, subscriptionRemaining);
+        const creditsUsed = callMinutes - subscriptionUsed;
+
+        // Record usage (adds to minutes_used)
         recordUsage(currentUser.id, call_id, durationSeconds);
 
-        const minutesUsed = Math.ceil(durationSeconds / 60);
-        const newTotalMinutes = currentUser.minutesUsed + minutesUsed;
-        const remaining = getMinutesRemaining(newTotalMinutes);
+        // Deduct from credits if needed
+        if (creditsUsed > 0) {
+          deductCreditMinutes(currentUser.id, creditsUsed);
+        }
+
+        // Calculate remaining
+        const newTotalMinutes = currentUser.minutesUsed + subscriptionUsed;
+        const newCreditMinutes = currentUser.creditMinutes - creditsUsed;
+        const subscriptionRemainingAfter = getMinutesRemaining(newTotalMinutes);
+        const totalRemaining = subscriptionRemainingAfter + newCreditMinutes;
+
+        let statusText = `Call ended. Duration: ${durationSeconds}s (${callMinutes} min)`;
+        if (creditsUsed > 0) {
+          statusText += `\n\nUsed ${subscriptionUsed} subscription + ${creditsUsed} credit minutes.`;
+        }
+        statusText += `\n\n${totalRemaining} minutes remaining (${subscriptionRemainingAfter} subscription + ${newCreditMinutes} credits).`;
 
         return {
-          content: [{
-            type: 'text',
-            text: `Call ended. Duration: ${durationSeconds}s (${minutesUsed} min)\n\n${remaining} minutes remaining this month.`,
-          }],
+          content: [{ type: 'text', text: statusText }],
         };
       }
 
@@ -274,6 +296,7 @@ function handleMcpRequest(req: IncomingMessage, res: ServerResponse): void {
     phoneNumber: user.phone_number,
     subscriptionStatus: user.subscription_status,
     minutesUsed: user.minutes_used,
+    creditMinutes: user.credit_minutes,
   };
 
   let body = '';

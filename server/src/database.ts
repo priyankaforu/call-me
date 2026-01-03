@@ -17,6 +17,7 @@ export interface User {
   period_start: string | null;
   period_end: string | null;
   minutes_used: number;
+  credit_minutes: number;  // Purchased credits (used after subscription minutes exhausted)
   created_at: string;
   enabled: boolean;
 }
@@ -46,6 +47,7 @@ export function initDatabase(dbPath?: string): void {
       period_start TEXT,
       period_end TEXT,
       minutes_used INTEGER DEFAULT 0,
+      credit_minutes INTEGER DEFAULT 0,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       enabled INTEGER DEFAULT 1
     );
@@ -165,6 +167,26 @@ export function addMinutesUsed(userId: string, minutes: number): number {
   return newMinutes;
 }
 
+export function addCreditMinutes(userId: string, minutes: number): number {
+  const user = getUserById(userId);
+  if (!user) throw new Error('User not found');
+
+  const newCredits = user.credit_minutes + minutes;
+  const stmt = db.prepare('UPDATE users SET credit_minutes = ? WHERE id = ?');
+  stmt.run(newCredits, userId);
+  return newCredits;
+}
+
+export function deductCreditMinutes(userId: string, minutes: number): number {
+  const user = getUserById(userId);
+  if (!user) throw new Error('User not found');
+
+  const newCredits = Math.max(0, user.credit_minutes - minutes);
+  const stmt = db.prepare('UPDATE users SET credit_minutes = ? WHERE id = ?');
+  stmt.run(newCredits, userId);
+  return newCredits;
+}
+
 export function updateUserPhone(userId: string, phoneNumber: string): void {
   const stmt = db.prepare('UPDATE users SET phone_number = ? WHERE id = ?');
   stmt.run(phoneNumber, userId);
@@ -231,6 +253,7 @@ function rowToUser(row: any): User {
     period_start: row.period_start,
     period_end: row.period_end,
     minutes_used: row.minutes_used || 0,
+    credit_minutes: row.credit_minutes || 0,
     created_at: row.created_at,
     enabled: Boolean(row.enabled),
   };

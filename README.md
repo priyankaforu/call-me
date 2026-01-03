@@ -25,7 +25,7 @@ Sign up at [heyboss.io](https://heyboss.io) to get your API key. You'll provide 
 
 **$20/month** - includes 60 minutes of call time.
 
-Simple subscription. Minutes reset each billing cycle.
+Need more? Purchase additional credits at **$0.50/minute**. Credits are used after your subscription minutes run out and never expire.
 
 ## How It Works
 
