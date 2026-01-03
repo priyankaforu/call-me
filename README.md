@@ -1,21 +1,26 @@
 # Hey Boss
 
-**MCP Plugin for Claude Code** - Claude calls you on the phone when it needs your input, wants to report progress, or needs to discuss next steps.
+**Claude Code Plugin** - Claude calls you on the phone when it needs your input, wants to report progress, or needs to discuss next steps.
 
 ## Install
 
-```bash
-claude mcp add hey-boss \
-  -e TWILIO_ACCOUNT_SID=ACxxxxx \
-  -e TWILIO_AUTH_TOKEN=your_token \
-  -e TWILIO_PHONE_NUMBER=+1234567890 \
-  -e USER_PHONE_NUMBER=+1234567890 \
-  -e OPENAI_API_KEY=sk-xxxxx \
-  -e PUBLIC_URL=https://your-url.ngrok.io \
-  -- npx -y hey-boss-mcp
+```
+/plugin marketplace add ZeframLou/hey-boss
+/plugin install hey-boss@hey-boss
 ```
 
-That's it. Restart Claude Code and the tools are available.
+Then set your environment variables (in your shell profile or `.env`):
+
+```bash
+export TWILIO_ACCOUNT_SID=ACxxxxx
+export TWILIO_AUTH_TOKEN=your_token
+export TWILIO_PHONE_NUMBER=+1234567890
+export USER_PHONE_NUMBER=+1234567890
+export OPENAI_API_KEY=sk-xxxxx
+export PUBLIC_URL=https://your-url.ngrok.io
+```
+
+Restart Claude Code and the tools are available.
 
 ## Prerequisites
 
@@ -32,7 +37,7 @@ That's it. Restart Claude Code and the tools are available.
 
 ## How It Works
 
-Claude Code controls everything. This tool just converts voice to text and back.
+Claude Code controls everything. This plugin just converts voice to text and back.
 
 ```
 Claude Code
