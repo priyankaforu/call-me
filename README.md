@@ -98,6 +98,23 @@ const response = await continue_call({
 });
 ```
 
+### `speak_to_user`
+Speak to the user without waiting for a response. Useful for acknowledging requests before starting time-consuming operations.
+
+```typescript
+await speak_to_user({
+  call_id: callId,
+  message: "Let me search for that information. Give me a moment..."
+});
+// Continue with your long-running task
+const results = await performSearch();
+// Then continue the conversation
+const response = await continue_call({
+  call_id: callId,
+  message: `I found ${results.length} results...`
+});
+```
+
 ### `end_call`
 End the call.
 

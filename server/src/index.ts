@@ -79,6 +79,18 @@ async function main() {
           },
         },
         {
+          name: 'speak_to_user',
+          description: 'Speak a message on an active call without waiting for a response. Use this to acknowledge requests or provide status updates before starting time-consuming operations.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              call_id: { type: 'string', description: 'The call ID from initiate_call' },
+              message: { type: 'string', description: 'What to say to the user' },
+            },
+            required: ['call_id', 'message'],
+          },
+        },
+        {
           name: 'end_call',
           description: 'End an active call with a closing message.',
           inputSchema: {
@@ -115,6 +127,15 @@ async function main() {
 
         return {
           content: [{ type: 'text', text: `User's response:\n${response}` }],
+        };
+      }
+
+      if (request.params.name === 'speak_to_user') {
+        const { call_id, message } = request.params.arguments as { call_id: string; message: string };
+        await callManager.speakOnly(call_id, message);
+
+        return {
+          content: [{ type: 'text', text: `Message spoken: "${message}"` }],
         };
       }
 

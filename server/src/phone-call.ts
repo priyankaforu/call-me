@@ -298,6 +298,14 @@ export class CallManager {
     return response;
   }
 
+  async speakOnly(callId: string, message: string): Promise<void> {
+    const state = this.activeCalls.get(callId);
+    if (!state) throw new Error(`No active call: ${callId}`);
+
+    await this.speak(state, message);
+    state.conversationHistory.push({ speaker: 'claude', message });
+  }
+
   async endCall(callId: string, message: string): Promise<{ durationSeconds: number }> {
     const state = this.activeCalls.get(callId);
     if (!state) throw new Error(`No active call: ${callId}`);
