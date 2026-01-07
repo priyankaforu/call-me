@@ -1,15 +1,12 @@
 # CallMe
 
-**Let Claude call you.**
+**Claude Code plugin for phone calls.**
 
-Start a task, walk away. Claude calls when it's done, stuck, or needs a decision.
+Start a task, walk away. Your phone rings when Claude is done, stuck, or needs a decision.
 
-### When Claude Calls
-
-- **Task done** — Migration finished, tests passing, ready for review
-- **Decision needed** — Found two approaches, wants your input
-- **Blocked** — Spec unclear, needs clarification before proceeding
-- **Approval required** — Staging passed, waiting for go-ahead on prod
+- **Async workflow** — No more babysitting the terminal
+- **Multi-turn conversation** — Talk through decisions naturally
+- **Works anywhere** — Step out for coffee, take a meeting
 
 ---
 
