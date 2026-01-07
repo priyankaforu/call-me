@@ -350,9 +350,16 @@ export class CallManager {
 
       console.error(`Call initiated: ${callControlId} -> ${this.config.userPhoneNumber}`);
 
+      // Start TTS generation in parallel with waiting for connection
+      // This reduces latency by generating audio while Twilio establishes the stream
+      const ttsPromise = this.generateTTSAudio(message);
+
       await this.waitForConnection(callId, 15000);
 
-      const response = await this.speakAndListen(state, message);
+      // Send the pre-generated audio and listen for response
+      const audioData = await ttsPromise;
+      await this.sendPreGeneratedAudio(state, audioData);
+      const response = await this.listen(state);
       state.conversationHistory.push({ speaker: 'claude', message });
       state.conversationHistory.push({ speaker: 'user', message: response });
 
@@ -418,6 +425,42 @@ export class CallManager {
     throw new Error('WebSocket connection timeout');
   }
 
+  /**
+   * Pre-generate TTS audio (can run in parallel with connection setup)
+   * Returns mu-law encoded audio ready to send to Twilio
+   */
+  private async generateTTSAudio(text: string): Promise<Buffer> {
+    console.error(`[TTS] Generating audio for: ${text.substring(0, 50)}...`);
+    const tts = this.config.providers.tts;
+    const pcmData = await tts.synthesize(text);
+    const resampledPcm = this.resample24kTo8k(pcmData);
+    const muLawData = this.pcmToMuLaw(resampledPcm);
+    console.error(`[TTS] Audio generated: ${muLawData.length} bytes`);
+    return muLawData;
+  }
+
+  /**
+   * Send pre-generated mu-law audio to the call
+   */
+  private async sendPreGeneratedAudio(state: CallState, muLawData: Buffer): Promise<void> {
+    console.error(`[${state.callId}] Sending pre-generated audio...`);
+    const chunkSize = 160;  // 20ms at 8kHz
+    for (let i = 0; i < muLawData.length; i += chunkSize) {
+      const chunk = muLawData.subarray(i, i + chunkSize);
+      if (state.ws?.readyState === WebSocket.OPEN && state.streamSid) {
+        state.ws.send(JSON.stringify({
+          event: 'media',
+          streamSid: state.streamSid,
+          media: { payload: chunk.toString('base64') },
+        }));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 18));
+    }
+    // Small delay to ensure audio finishes playing before listening
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    console.error(`[${state.callId}] Audio sent`);
+  }
+
   private async speakAndListen(state: CallState, text: string): Promise<string> {
     await this.speak(state, text);
     return await this.listen(state);
@@ -436,7 +479,7 @@ export class CallManager {
       await this.sendAudio(state, pcmData);
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await new Promise((resolve) => setTimeout(resolve, 150));
     console.error(`[${state.callId}] Speaking done`);
   }
 
