@@ -137,10 +137,36 @@ export interface TTSConfig {
 }
 
 /**
+ * LLM Provider - generates conversational responses
+ */
+export interface LLMProvider {
+  readonly name: string;
+
+  /**
+   * Initialize the provider
+   */
+  initialize(config: LLMConfig): void;
+
+  /**
+   * Generate a response based on conversation history
+   */
+  generateResponse(
+    systemPrompt: string,
+    conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }>
+  ): Promise<string>;
+}
+
+export interface LLMConfig {
+  apiKey: string;
+  model?: string;
+}
+
+/**
  * Provider registry for dependency injection
  */
 export interface ProviderRegistry {
   phone: PhoneProvider;
   tts: TTSProvider;
   stt: RealtimeSTTProvider;
+  llm?: LLMProvider;  // Optional - only needed for autonomous calls
 }

@@ -51,8 +51,9 @@ export class TwilioPhoneProvider implements PhoneProvider {
           Url: webhookUrl,
           StatusCallback: webhookUrl,  // Receive call status updates (answered, completed, etc.)
           StatusCallbackEvent: 'initiated ringing answered completed',
-          MachineDetection: 'Enable',
-          MachineDetectionTimeout: '5',
+          // MachineDetection disabled for faster call connection
+          // MachineDetection: 'Enable',
+          // MachineDetectionTimeout: '5',
         }).toString(),
       }
     );

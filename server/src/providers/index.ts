@@ -5,11 +5,12 @@
  * Supports Telnyx or Twilio for phone, OpenAI for TTS and Realtime STT.
  */
 
-import type { PhoneProvider, TTSProvider, RealtimeSTTProvider, ProviderRegistry } from './types.js';
+import type { PhoneProvider, TTSProvider, RealtimeSTTProvider, LLMProvider, ProviderRegistry } from './types.js';
 import { TelnyxPhoneProvider } from './phone-telnyx.js';
 import { TwilioPhoneProvider } from './phone-twilio.js';
 import { OpenAITTSProvider } from './tts-openai.js';
 import { OpenAIRealtimeSTTProvider } from './stt-openai-realtime.js';
+import { ClaudeLLMProvider } from './llm-claude.js';
 
 export * from './types.js';
 
@@ -35,6 +36,10 @@ export interface ProviderConfig {
   ttsVoice?: string;
   sttModel?: string;
   sttSilenceDurationMs?: number;
+
+  // Claude API (for autonomous conversations)
+  claudeApiKey?: string;
+  claudeModel?: string;
 }
 
 export function loadProviderConfig(): ProviderConfig {
@@ -55,6 +60,8 @@ export function loadProviderConfig(): ProviderConfig {
     ttsVoice: process.env.CALLME_TTS_VOICE || 'onyx',
     sttModel: process.env.CALLME_STT_MODEL || 'gpt-4o-transcribe',
     sttSilenceDurationMs,
+    claudeApiKey: process.env.CALLME_CLAUDE_API_KEY,
+    claudeModel: process.env.CALLME_CLAUDE_MODEL,
   };
 }
 
@@ -95,11 +102,24 @@ export function createSTTProvider(config: ProviderConfig): RealtimeSTTProvider {
   return provider;
 }
 
+export function createLLMProvider(config: ProviderConfig): LLMProvider | undefined {
+  if (!config.claudeApiKey) {
+    return undefined;
+  }
+  const provider = new ClaudeLLMProvider();
+  provider.initialize({
+    apiKey: config.claudeApiKey,
+    model: config.claudeModel,
+  });
+  return provider;
+}
+
 export function createProviders(config: ProviderConfig): ProviderRegistry {
   return {
     phone: createPhoneProvider(config),
     tts: createTTSProvider(config),
     stt: createSTTProvider(config),
+    llm: createLLMProvider(config),
   };
 }
 

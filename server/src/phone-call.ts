@@ -14,6 +14,7 @@ import {
   generateWebSocketToken,
   validateWebSocketToken,
 } from './webhook-security.js';
+import { WhatsAppHandler, type WhatsAppConfig } from './whatsapp.js';
 
 interface CallState {
   callId: string;
@@ -37,6 +38,7 @@ export interface ServerConfig {
   providers: ProviderRegistry;
   providerConfig: ProviderConfig;  // For webhook signature verification
   transcriptTimeoutMs: number;
+  whatsapp?: WhatsAppConfig;  // Optional WhatsApp configuration
 }
 
 export function loadServerConfig(publicUrl: string): ServerConfig {
@@ -56,6 +58,16 @@ export function loadServerConfig(publicUrl: string): ServerConfig {
   // Default 3 minutes for transcript timeout
   const transcriptTimeoutMs = parseInt(process.env.CALLME_TRANSCRIPT_TIMEOUT_MS || '180000', 10);
 
+  // Optional WhatsApp configuration
+  const whatsappNumber = process.env.CALLME_WHATSAPP_NUMBER;
+  const userWhatsappNumber = process.env.CALLME_USER_WHATSAPP_NUMBER;
+  const whatsapp = whatsappNumber && userWhatsappNumber ? {
+    accountSid: providerConfig.phoneAccountSid,
+    authToken: providerConfig.phoneAuthToken,
+    whatsappNumber,
+    userWhatsappNumber,
+  } : undefined;
+
   return {
     publicUrl,
     port: parseInt(process.env.CALLME_PORT || '3333', 10),
@@ -64,6 +76,7 @@ export function loadServerConfig(publicUrl: string): ServerConfig {
     providers,
     providerConfig,
     transcriptTimeoutMs,
+    whatsapp,
   };
 }
 
@@ -75,9 +88,20 @@ export class CallManager {
   private wss: WebSocketServer | null = null;
   private config: ServerConfig;
   private currentCallId = 0;
+  private whatsappHandler: WhatsAppHandler | null = null;
 
   constructor(config: ServerConfig) {
     this.config = config;
+
+    // Initialize WhatsApp handler if configured
+    if (config.whatsapp && config.providers.llm) {
+      this.whatsappHandler = new WhatsAppHandler(config.whatsapp, config.providers.llm);
+      this.whatsappHandler.setCallRequestHandler(async (context) => {
+        console.error(`[WhatsApp] Call requested: ${context}`);
+        await this.startAutonomousCall(context);
+      });
+      console.error('[WhatsApp] Handler initialized');
+    }
   }
 
   startServer(): void {
@@ -92,6 +116,11 @@ export class CallManager {
       if (url.pathname === '/health') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ status: 'ok', activeCalls: this.activeCalls.size }));
+        return;
+      }
+
+      if (url.pathname === '/whatsapp') {
+        this.handleWhatsAppWebhook(req, res);
         return;
       }
 
@@ -310,6 +339,46 @@ export class CallManager {
     res.end('Invalid content type');
   }
 
+  private handleWhatsAppWebhook(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.whatsappHandler) {
+      console.error('[WhatsApp] Handler not configured');
+      res.writeHead(500);
+      res.end('WhatsApp not configured');
+      return;
+    }
+
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', async () => {
+      try {
+        const params = new URLSearchParams(body);
+        const message = WhatsAppHandler.parseWebhook(params);
+
+        if (!message) {
+          console.error('[WhatsApp] Invalid webhook data');
+          res.writeHead(400);
+          res.end('Invalid webhook data');
+          return;
+        }
+
+        console.error(`[WhatsApp] Message from ${message.from}: ${message.body}`);
+
+        // Respond with empty TwiML (no auto-reply from Twilio)
+        // We'll send our response via the API instead
+        res.writeHead(200, { 'Content-Type': 'text/xml' });
+        res.end('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
+
+        // Process message asynchronously
+        await this.whatsappHandler!.handleIncomingMessage(message);
+
+      } catch (error) {
+        console.error('[WhatsApp] Error handling webhook:', error);
+        res.writeHead(500);
+        res.end('Internal error');
+      }
+    });
+  }
+
   private async handleTwilioWebhook(params: URLSearchParams, res: ServerResponse): Promise<void> {
     const callSid = params.get('CallSid');
     const callStatus = params.get('CallStatus');
@@ -466,7 +535,8 @@ export class CallManager {
       // This reduces latency by generating audio while Twilio establishes the stream
       const ttsPromise = this.generateTTSAudio(message);
 
-      await this.waitForConnection(callId, 15000);
+      // Increased timeout to 30s for Twilio trial accounts (trial message requires user interaction)
+      await this.waitForConnection(callId, 30000);
 
       // Send the pre-generated audio and listen for response
       const audioData = await ttsPromise;
@@ -766,6 +836,180 @@ export class CallManager {
     }
     const mantissa = (pcm >> (exponent + 3)) & 0x0f;
     return (~(sign | (exponent << 4) | mantissa)) & 0xff;
+  }
+
+  /**
+   * Start an autonomous conversation that runs until the user says goodbye or hangs up.
+   * The server handles the entire conversation loop using Claude API for responses.
+   */
+  async startAutonomousCall(context: string): Promise<{
+    callId: string;
+    summary: string;
+    durationSeconds: number;
+  }> {
+    if (!this.config.providers.llm) {
+      throw new Error('Autonomous calls require CALLME_CLAUDE_API_KEY to be configured');
+    }
+
+    const llm = this.config.providers.llm;
+    const callId = `call-${++this.currentCallId}-${Date.now()}`;
+
+    // System prompt for the conversation
+    const systemPrompt = `You are Claude, an AI assistant having a phone conversation with a user.
+You were given this context for why you're calling: "${context}"
+
+Guidelines for the conversation:
+- Keep responses concise and natural for voice (1-3 sentences typically)
+- Be helpful, friendly, and conversational
+- Listen carefully to what the user says and respond appropriately
+- If the user says "goodbye", "bye", "hang up", "end call", or similar, respond with a brief farewell and set your response to indicate the call should end
+- Don't use markdown, bullet points, or other text formatting - speak naturally
+- Don't say things like "as an AI" - just be conversational
+
+If the user wants to end the call, end your response with [END_CALL] on a new line.`;
+
+    // Create realtime transcription session
+    const sttSession = this.config.providers.stt.createSession();
+    await sttSession.connect();
+    console.error(`[${callId}] Autonomous call - STT session connected`);
+
+    // Generate secure token
+    const wsToken = generateWebSocketToken();
+
+    const state: CallState = {
+      callId,
+      callControlId: null,
+      userPhoneNumber: this.config.userPhoneNumber,
+      ws: null,
+      streamSid: null,
+      streamingReady: false,
+      wsToken,
+      conversationHistory: [],
+      startTime: Date.now(),
+      hungUp: false,
+      sttSession,
+    };
+
+    this.activeCalls.set(callId, state);
+
+    // Track conversation for Claude API
+    const llmHistory: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+
+    try {
+      // Initiate the call
+      const callControlId = await this.config.providers.phone.initiateCall(
+        this.config.userPhoneNumber,
+        this.config.phoneNumber,
+        `${this.config.publicUrl}/twiml`
+      );
+
+      state.callControlId = callControlId;
+      this.callControlIdToCallId.set(callControlId, callId);
+      this.wsTokenToCallId.set(wsToken, callId);
+
+      console.error(`[${callId}] Autonomous call initiated: ${callControlId}`);
+
+      // Generate initial greeting
+      const greeting = await llm.generateResponse(
+        systemPrompt,
+        [{ role: 'user', content: `[Call just connected. Greet the user and explain why you're calling based on the context.]` }]
+      );
+
+      // Remove any [END_CALL] markers from greeting
+      const cleanGreeting = greeting.replace(/\[END_CALL\]/g, '').trim();
+
+      // Wait for connection
+      await this.waitForConnection(callId, 30000);
+
+      // Speak greeting
+      await this.speak(state, cleanGreeting);
+      state.conversationHistory.push({ speaker: 'claude', message: cleanGreeting });
+      llmHistory.push({ role: 'assistant', content: cleanGreeting });
+
+      // Main conversation loop
+      let shouldContinue = true;
+      while (shouldContinue && !state.hungUp) {
+        try {
+          // Listen for user response
+          console.error(`[${callId}] Listening for user...`);
+          const userResponse = await this.listen(state);
+
+          if (state.hungUp) {
+            console.error(`[${callId}] User hung up`);
+            break;
+          }
+
+          state.conversationHistory.push({ speaker: 'user', message: userResponse });
+          llmHistory.push({ role: 'user', content: userResponse });
+
+          // Generate Claude's response
+          console.error(`[${callId}] Generating response...`);
+          const response = await llm.generateResponse(systemPrompt, llmHistory);
+
+          // Check if Claude wants to end the call
+          if (response.includes('[END_CALL]')) {
+            shouldContinue = false;
+          }
+
+          const cleanResponse = response.replace(/\[END_CALL\]/g, '').trim();
+
+          // Speak the response
+          await this.speak(state, cleanResponse);
+          state.conversationHistory.push({ speaker: 'claude', message: cleanResponse });
+          llmHistory.push({ role: 'assistant', content: cleanResponse });
+
+        } catch (error) {
+          if ((error as Error).message.includes('hung up')) {
+            console.error(`[${callId}] Call ended by user`);
+            break;
+          }
+          console.error(`[${callId}] Error in conversation loop:`, error);
+          break;
+        }
+      }
+
+      // Wait for audio to finish playing
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+
+      // Hang up if not already disconnected
+      if (state.callControlId && !state.hungUp) {
+        await this.config.providers.phone.hangup(state.callControlId);
+      }
+
+      // Generate summary
+      const summaryPrompt = `Summarize this phone conversation in 2-3 sentences, focusing on what was discussed and any outcomes:
+
+${state.conversationHistory.map(h => `${h.speaker === 'claude' ? 'Assistant' : 'User'}: ${h.message}`).join('\n')}`;
+
+      let summary = 'Call completed.';
+      try {
+        summary = await llm.generateResponse(
+          'You are a helpful assistant that summarizes conversations concisely.',
+          [{ role: 'user', content: summaryPrompt }]
+        );
+      } catch (e) {
+        console.error(`[${callId}] Failed to generate summary:`, e);
+      }
+
+      const durationSeconds = Math.round((Date.now() - state.startTime) / 1000);
+
+      // Cleanup
+      state.sttSession?.close();
+      state.ws?.close();
+      this.wsTokenToCallId.delete(state.wsToken);
+      if (state.callControlId) {
+        this.callControlIdToCallId.delete(state.callControlId);
+      }
+      this.activeCalls.delete(callId);
+
+      return { callId, summary, durationSeconds };
+
+    } catch (error) {
+      state.sttSession?.close();
+      state.ws?.close();
+      this.activeCalls.delete(callId);
+      throw error;
+    }
   }
 
   getHttpServer() {

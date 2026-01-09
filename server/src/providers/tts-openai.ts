@@ -46,6 +46,8 @@ export class OpenAITTSProvider implements TTSProvider {
   /**
    * Stream TTS audio as chunks arrive from OpenAI
    * Yields Buffer chunks of PCM audio data
+   *
+   * Fixed: Handle Node.js streams properly instead of Web API ReadableStream
    */
   async *synthesizeStream(text: string): AsyncGenerator<Buffer> {
     if (!this.client) throw new Error('OpenAI TTS not initialized');
@@ -58,23 +60,15 @@ export class OpenAITTSProvider implements TTSProvider {
       speed: 1.0,
     });
 
-    // Get the response body as a readable stream
-    const body = response.body;
-    if (!body) {
-      throw new Error('No response body from OpenAI TTS');
-    }
+    // OpenAI SDK returns different stream types depending on environment
+    // Use arrayBuffer() which works reliably in Node.js
+    const arrayBuffer = await response.arrayBuffer();
+    const fullBuffer = Buffer.from(arrayBuffer);
 
-    const reader = body.getReader();
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (value) {
-          yield Buffer.from(value);
-        }
-      }
-    } finally {
-      reader.releaseLock();
+    // Yield in chunks for streaming behavior (16KB chunks for good balance)
+    const chunkSize = 16384;
+    for (let i = 0; i < fullBuffer.length; i += chunkSize) {
+      yield fullBuffer.subarray(i, Math.min(i + chunkSize, fullBuffer.length));
     }
   }
 }

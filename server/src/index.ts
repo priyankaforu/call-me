@@ -7,6 +7,14 @@
  * Automatically starts ngrok to expose webhooks for phone providers.
  */
 
+// Load environment variables from .env file in parent directory
+import { config } from 'dotenv';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+config({ path: resolve(__dirname, '../../.env') });
+
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
@@ -102,6 +110,20 @@ async function main() {
             required: ['call_id', 'message'],
           },
         },
+        {
+          name: 'start_autonomous_call',
+          description: 'Start a fully autonomous phone conversation. The call runs independently without requiring CLI interaction - you just provide context and the server handles the entire conversation using Claude API. Use this when you want a natural back-and-forth conversation without manual tool calls for each response. The call ends when the user says goodbye or hangs up.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              context: {
+                type: 'string',
+                description: 'Context for the call - why are you calling? What do you want to discuss? This will guide the conversation.',
+              },
+            },
+            required: ['context'],
+          },
+        },
       ],
     };
   });
@@ -123,11 +145,21 @@ async function main() {
 
       if (request.params.name === 'continue_call') {
         const { call_id, message } = request.params.arguments as { call_id: string; message: string };
-        const response = await callManager.continueCall(call_id, message);
-
-        return {
-          content: [{ type: 'text', text: `User's response:\n${response}` }],
-        };
+        
+        // Log progress to stderr (visible in debug mode)
+        console.error(`[MCP] continue_call starting for ${call_id}`);
+        
+        try {
+          const response = await callManager.continueCall(call_id, message);
+          console.error(`[MCP] continue_call completed for ${call_id}`);
+          
+          return {
+            content: [{ type: 'text', text: `User's response:\n${response}` }],
+          };
+        } catch (error) {
+          console.error(`[MCP] continue_call error for ${call_id}:`, error);
+          throw error;
+        }
       }
 
       if (request.params.name === 'speak_to_user') {
@@ -145,6 +177,21 @@ async function main() {
 
         return {
           content: [{ type: 'text', text: `Call ended. Duration: ${durationSeconds}s` }],
+        };
+      }
+
+      if (request.params.name === 'start_autonomous_call') {
+        const { context } = request.params.arguments as { context: string };
+
+        console.error(`[MCP] Starting autonomous call with context: ${context}`);
+
+        const result = await callManager.startAutonomousCall(context);
+
+        return {
+          content: [{
+            type: 'text',
+            text: `Autonomous call completed.\n\nCall ID: ${result.callId}\nDuration: ${result.durationSeconds}s\n\nSummary:\n${result.summary}`,
+          }],
         };
       }
 
